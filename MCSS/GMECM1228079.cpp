@@ -86,11 +86,11 @@ void GMECMValue::setup(GMECM *pecm, const String& ptitle, uint16_t poffsetMALF1,
 }
 
 void GMECMLCDPage::setup(GMECM *pecm,
-                         GMECMValue *value1,
-                         GMECMValue *value2 ) {
+                         VehicleValue *value1,
+                         VehicleValue *value2 ) {
   ecm = pecm;
 
-  column = new GMECMValue *[2];
+  column = new VehicleValue *[2];
 
   column[0] = value1;
   column[1] = value2;
@@ -122,8 +122,8 @@ uint32_t GMECMValue::decodeValue() {
     return pgm_read_byte(&coolant_decode[i-1]) + (((double)pgm_read_byte(&coolant_decode[i]) - (double)pgm_read_byte(&coolant_decode[i-1])) * percent_between_encode);
   } else if (mask != 0xFF) {
    
-    if ((ecm->SRAM[offset] & mask) != 0) return 1.0;
-    else return 0.0;
+    if ((ecm->SRAM[offset] & mask) != 0) return 1;
+    else return 0;
     
   } else if (offsetMALF > 0) {
 
@@ -164,8 +164,8 @@ String GMECMValue::getValueString() {
       }
       f1 = f1 >> 1;
     }
-    if (malfString.length() > 0) return malfString;
-    else return(F("NONE"));
+    if (malfString.length() > 0) return malfString + F("                ");
+    else return(F("NONE            "));
   } else if (abs(factor - trunc(factor) > .001)) {
     double f1 = decodeValueWithFraction();
     return Format16x2String(f1);
@@ -175,6 +175,53 @@ String GMECMValue::getValueString() {
   }
  
 }
+
+
+void SensorValue::setup(GMECM *pecm, const String& ptitle, uint8_t panalogPin, double pmultiplier, uint8_t pacceleratedDecay) {
+
+  ecm = pecm;
+  title = ptitle;
+  analogPin = panalogPin;
+  multiplier = pmultiplier;
+  acceleratedDecay = pacceleratedDecay;
+}
+
+uint32_t SensorValue::decodeValue() {
+
+// Doing multiple reads in order to try to stabilize analog readings when using more than 1 analog pin.
+// http://forums.adafruit.com/viewtopic.php?f=25&t=11597
+
+  analogRead(analogPin);
+  delay(10);
+  if (acceleratedDecay) {
+    double factor = 100.0 / multiplier;
+    int reading = analogRead(analogPin);
+    return reading / (factor + abs(factor - reading)) * 100;
+  }
+  else return analogRead(analogPin) * multiplier;
+  
+}
+
+double SensorValue::decodeValueWithFraction() {
+
+  analogRead(analogPin);
+  delay(10);
+  return analogRead(analogPin) * multiplier;
+  
+}
+
+String SensorValue::getTitleBar() {
+
+  return Format16x2String(title);
+  
+}
+
+String SensorValue::getValueString() {
+  
+  return Format16x2String(decodeValue());
+  
+}
+
 
 String GMECMLCDPage::getValueString() {
   if (column[1] != 0) return column[0]->getValueString() + column[1]->getValueString();
@@ -190,11 +237,8 @@ GMECM::GMECM() : lastRefreshCount(0)
   ecmValue[VALUE_TPS].setup(this, F("TPS"), RAM_OFFSET_TPS, 0.019600);
   ecmValue[VALUE_WOT].setup(this, F("WOT"), RAM_OFFSET_CLCC, 0x08, F("YES"), F("NO"));
 
-  ecmValue[VALUE_COLD_START].setup(this, F("START"), RAM_OFFSET_CLCC, 0x02, F("COLD"), F("WARM"));
   ecmValue[VALUE_CLOSED_LOOP].setup(this, F("LOOP"), RAM_OFFSET_CLCC, 0x80, F("CLOSED"), F("OPEN"));
-
   ecmValue[VALUE_ENGINE_RUN_TIME].setup(this, F("RUNTIME"), (uint16_t)RAM_OFFSET_ENGINE_RUN_TIME_MSB, (uint16_t)RAM_OFFSET_ENGINE_RUN_TIME_LSB, 0.0166666666666667);
-  ecmValue[VALUE_CYCLES_LEFT_OPEN].setup(this, F("OLCNTDWN"), RAM_OFFSET_CYCLES_LEFT_OPEN, 1.0);
 
   ecmValue[VALUE_O2].setup(this, F("O2"), RAM_OFFSET_O2, 4.44);
   ecmValue[VALUE_RICH_LEAN].setup(this, F("RCH/LN"), RAM_OFFSET_CLCC, 0x20, F("RICH"), ("LEAN"));
@@ -205,8 +249,9 @@ GMECM::GMECM() : lastRefreshCount(0)
   ecmValue[VALUE_COOL_TEMP].setup(this, F("COOL.\337C"), RAM_OFFSET_COOLANT_TEMP, F("COOLANT_TEMP"));
   ecmValue[VALUE_BATT_V].setup(this,  F("BATT V"), RAM_OFFSET_BATT_VOLT, 0.1);
 
-  ecmValue[VALUE_MCS_DUTY].setup(this, F("MCSDUTY"), RAM_OFFSET_MC_DUTY_CYCLE, 0.392157);
-  ecmValue[VALUE_EGR_DUTY].setup(this, F("EGRDUTY"), RAM_OFFSET_EGR_DUTY_CYCLE, 0.392157);
+//  ecmValue[VALUE_MCS_DUTY].setup(this, F("MCSDUTY"), RAM_OFFSET_MC_DUTY_CYCLE, 0.392157); // This is %, not degrees
+  ecmValue[VALUE_MCS_DUTY].setup(this, F("MCS DC\337"), RAM_OFFSET_MC_DUTY_CYCLE, 0.234375);
+  ecmValue[VALUE_EGR_DUTY].setup(this, F("EGR DC%"), RAM_OFFSET_EGR_DUTY_CYCLE, 0.392157);
 
   ecmValue[VALUE_CALC_SA].setup(this, F("CALC SA"), RAM_OFFSET_CALC_SA, 0.351560);
   ecmValue[VALUE_FINAL_SA].setup(this, F("FINAL SA"), RAM_OFFSET_FINAL_SA, 0.351560);
@@ -215,11 +260,16 @@ GMECM::GMECM() : lastRefreshCount(0)
   ecmValue[VALUE_KNOCK_RETARD].setup(this, F("RETARD"), RAM_OFFSET_KNOCK_RETARD, 0.351560);
 
   ecmValue[VALUE_MALF].setup(this, F("TROUBLE CODES"), (uint16_t)RAM_OFFSET_MALF_1, (uint16_t)RAM_OFFSET_MALF_2, (uint16_t)RAM_OFFSET_MALF_3);
+  ecmValue[VALUE_SES_LIGHT].setup(this, F("SESLIGHT"), RAM_OFFSET_SES_LIGHT, 0x80, F("ON"), F("OFF"));
+
+  sensorValue[VALUE_RIGHT_TURN].setup(this, F("RIGHT"), ANALOG_PIN_RIGHT_TURN, 1.0, 0);
+  sensorValue[VALUE_LEFT_TURN].setup(this, F("LEFT"), ANALOG_PIN_LEFT_TURN, 1.0, 0);
+  sensorValue[VALUE_FUEL_LEVEL].setup(this, F("FUEL"), ANALOG_PIN_FUEL_LEVEL, 0.2326, 1);
+  sensorValue[VALUE_OIL_PRESSURE].setup(this, F("OILPRESS"), ANALOG_PIN_OIL_PRESSURE, 0.6844, 0);
 
   lcdPage[LCD_PAGE_SPEED].setup(this, &ecmValue[VALUE_MPH], &ecmValue[VALUE_RPM]);
   lcdPage[LCD_PAGE_THROTTLE].setup(this, &ecmValue[VALUE_TPS], &ecmValue[VALUE_WOT]);
-  lcdPage[LCD_PAGE_LOOP_STATUS].setup(this, &ecmValue[VALUE_COLD_START], &ecmValue[VALUE_CLOSED_LOOP]);
-  lcdPage[LCD_PAGE_RUN_TIME].setup(this, &ecmValue[VALUE_ENGINE_RUN_TIME], &ecmValue[VALUE_CYCLES_LEFT_OPEN]);
+  lcdPage[LCD_PAGE_LOOP_STATUS].setup(this, &ecmValue[VALUE_CLOSED_LOOP], &ecmValue[VALUE_ENGINE_RUN_TIME]);
   lcdPage[LCD_PAGE_MIX].setup(this, &ecmValue[VALUE_O2], &ecmValue[VALUE_RICH_LEAN]);
   lcdPage[LCD_PAGE_PRESSURE].setup(this, &ecmValue[VALUE_MAP], &ecmValue[VALUE_BARO]);
   lcdPage[LCD_PAGE_COOL_BATT].setup(this, &ecmValue[VALUE_COOL_TEMP], &ecmValue[VALUE_BATT_V]);
@@ -227,6 +277,7 @@ GMECM::GMECM() : lastRefreshCount(0)
   lcdPage[LCD_PAGE_SA].setup(this, &ecmValue[VALUE_CALC_SA], &ecmValue[VALUE_FINAL_SA]);
   lcdPage[LCD_PAGE_KNOCK].setup(this, &ecmValue[VALUE_KNOCK], &ecmValue[VALUE_KNOCK_RETARD]);
   lcdPage[LCD_PAGE_MALF].setup(this, &ecmValue[VALUE_MALF]);
+  lcdPage[LCD_PAGE_FLUIDS].setup(this, &sensorValue[VALUE_FUEL_LEVEL], &sensorValue[VALUE_OIL_PRESSURE]);
     
   DualChannelSRAM::erase();
 
@@ -274,7 +325,7 @@ uint8_t disconnected_one_time_refresh = 0;
 uint8_t GMECM::refresh() {
 
   digitalWrite2(INTERRUPT, LOW);
-  delay(10);
+  delay(1);
   digitalWrite2(INTERRUPT, HIGH);
   delay(10);
 
@@ -306,11 +357,31 @@ uint8_t GMECM::refresh() {
       Serial.print(getSRAMChecksum(), HEX);
       Serial.print(F(" vs "));
       Serial.println(calcSRAMChecksum(), HEX);
+
+      // Trigger logic analyzer
+      digitalWrite2(A8, HIGH);
+      delay(10);
+      digitalWrite2(A8, LOW);
+
+      for (int i = 0; i < 3; ++i) {
+        Serial.println(F("Retrying and dumping differences:"));
+        uint8_t SRAMretry[MAX_ADDR];
+        memcpy(SRAMretry, SRAMbuffer, MAX_ADDR);
+        DualChannelSRAM::refreshToBuffer();
+        dumpDiffToSerial(SRAMbuffer, SRAMretry);
+        if (calcSRAMChecksum() != getSRAMChecksum()) {
+          Serial.println(F("Retry still had bad checksum"));
+          if (i == 2) return ERROR_CHECKSUM;
+        } else {
+          Serial.println(F("Retry clean, using retry packet so long as refresh count is good"));
+          break;
+        }
+      }
     #endif
-    return ERROR_CHECKSUM;
   }
   
   uint32_t refreshCount = getSRAMRefreshCount();
+  
   if (refreshCount <= lastRefreshCount) {
     if (refreshCount == 0 && lastRefreshCount == 0xFFFF) {
       #ifndef DISCONNECTED_MODE
@@ -320,11 +391,13 @@ uint8_t GMECM::refresh() {
       return 0;
     }
 
+    #ifndef DISCONNECTED_MODE
     Serial.print(F("Refresh Count Error - refreshCount = "));
     Serial.print(refreshCount);
     Serial.print(F(" lastRefreshCount = "));
     Serial.println(lastRefreshCount);
-    
+    #endif
+        
     lastRefreshCount = refreshCount;
     return ERROR_REFRESH_COUNT;
   }

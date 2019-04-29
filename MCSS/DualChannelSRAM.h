@@ -30,6 +30,7 @@ public:
   void refreshToBuffer();
   void copyBufferToActual();
   void dumpToSerial();
+  void dumpDiffToSerial(uint8_t *SRAM1, uint8_t *SRAM2);
 };
 
 #endif;
